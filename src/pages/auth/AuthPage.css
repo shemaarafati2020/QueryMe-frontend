@@ -328,8 +328,17 @@
   50% {
     transform: translateY(-3px) scale(1.04) rotate(0deg);
   }
-  75% {
-    transform: translateY(-5px) scale(1.05) rotate(-0.5deg);
+  87.5% {
+    transform: translateY(-5px) scale(1.05) rotate(-0.7deg);
+  }
+  93.75% {
+    transform: translateY(-4.5px) scale(1.045) rotate(-0.85deg);
+  }
+  96.875% {
+    transform: translateY(-4.2px) scale(1.04) rotate(-0.9deg);
+  }
+  98.4375% {
+    transform: translateY(-4.1px) scale(1.03) rotate(-0.95deg);
   }
 }
 
