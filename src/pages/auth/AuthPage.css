@@ -161,7 +161,7 @@
 
 .auth-form-container input:focus {
   background: #e8e8e8;
-  box-shadow: 0 0 0 2px rgba(106, 60, 176, 0.2);
+  box-shadow: 0 0 0 2px rgba(46, 125, 50, 0.2);
 }
 
 /* ---------- Role Dropdown (Select) ---------- */
@@ -192,7 +192,7 @@
 
 .auth-select:focus {
   background: #e8e8e8;
-  box-shadow: 0 0 0 2px rgba(106, 60, 176, 0.2);
+  box-shadow: 0 0 0 2px rgba(46, 125, 50, 0.2);
 }
 
 .auth-select-arrow {
@@ -291,7 +291,7 @@
   margin-top: 14px;
   border: none;
   border-radius: 8px;
-  background: linear-gradient(135deg, #6a3cb0, #512da8);
+  background: linear-gradient(135deg, #43A047, #2E7D32);
   color: #fff;
   font-size: 12px;
   font-weight: 600;
@@ -303,8 +303,8 @@
 }
 
 .auth-btn:hover {
-  background: linear-gradient(135deg, #7c4dbd, #5e35b1);
-  box-shadow: 0 4px 15px rgba(106, 60, 176, 0.35);
+  background: linear-gradient(135deg, #4CAF50, #388E3C);
+  box-shadow: 0 4px 15px rgba(46, 125, 50, 0.35);
   transform: translateY(-1px);
 }
 
@@ -336,28 +336,30 @@
 
 .auth-demo-btn {
   padding: 5px 12px;
-  border: 1px solid #ddd;
+  border: 1px solid #bbc7f5;
   border-radius: 6px;
-  background: #fafafa;
-  color: #666;
+  background: #eff2ff;
+  color: #2f3b77;
   font-size: 10px;
   font-weight: 600;
   font-family: 'Montserrat', sans-serif;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.4s cubic-bezier(0.68, -0.55, 0.265, 1.55);
   letter-spacing: 0.3px;
+  position: relative;
+  overflow: hidden;
 }
 
 .auth-demo-btn:hover {
-  border-color: #6a3cb0;
-  color: #6a3cb0;
-  background: rgba(106, 60, 176, 0.05);
+  border-color: #2E7D32;
+  color: #2E7D32;
+  background: rgba(46, 125, 50, 0.05);
 }
 
 .auth-demo-btn--active {
-  border-color: #6a3cb0;
-  color: #6a3cb0;
-  background: rgba(106, 60, 176, 0.08);
+  border-color: #2E7D32;
+  color: #2E7D32;
+  background: rgba(46, 125, 50, 0.08);
 }
 
 /* ========== Toggle / Overlay Panel ========== */
@@ -402,7 +404,7 @@
   padding: 0 40px;
   box-sizing: border-box;
   transition: transform 0.6s ease-in-out;
-  background: linear-gradient(135deg, #7b4fb5 0%, #5c32a6 40%, #4a27a0 70%, #3d1d8e 100%);
+  background: linear-gradient(135deg, #4CAF50 0%, #388E3C 40%, #2E7D32 70%, #1B5E20 100%);
 }
 
 .auth-toggle-panel h1 {
