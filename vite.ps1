@@ -1,0 +1,1 @@
+node "$PSScriptRoot/node_modules/vite/bin/vite.js" @args
