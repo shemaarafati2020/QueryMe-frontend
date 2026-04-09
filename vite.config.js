@@ -1,15 +1,14 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-var backendUrl = 'https://foxwj-154-68-72-126.run.pinggy-free.link';
 // https://vite.dev/config/
 export default defineConfig({
     plugins: [react()],
     server: {
         proxy: {
             '/api': {
-                target: backendUrl,
+                target: process.env.VITE_API_BASE_URL || 'http://localhost:8080',
                 changeOrigin: true,
-                secure: true,
+                secure: false,
             },
         },
     },
