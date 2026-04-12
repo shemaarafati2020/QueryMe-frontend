@@ -15,9 +15,11 @@ import {
 import './TeacherPages.css';
 
 type MembershipSource = 'ENROLLMENT' | 'DIRECT' | 'BOTH';
+const ROWS_PER_PAGE = 10;
 
 interface CourseMemberRow {
   courseId: string;
+  courseName: string;
   studentId: string;
   studentName: string;
   studentEmail: string;
@@ -123,6 +125,89 @@ const downloadTemplate = () => {
   URL.revokeObjectURL(url);
 };
 
+const buildCourseMemberRows = (
+  courses: Course[],
+  students: PlatformUser[],
+  enrollments: CourseEnrollment[],
+  selectedCourseId?: string,
+): CourseMemberRow[] => {
+  const courseNames = new Map(courses.map((course) => [String(course.id), course.name]));
+  const rowsByMembershipKey = new Map<string, CourseMemberRow>();
+
+  enrollments.forEach((enrollment) => {
+    const studentId = getEnrollmentStudentId(enrollment);
+    const courseId = getEnrollmentCourseId(enrollment);
+
+    if (!studentId || !courseId) {
+      return;
+    }
+
+    if (selectedCourseId && courseId !== selectedCourseId) {
+      return;
+    }
+
+    if (!courseNames.has(courseId)) {
+      return;
+    }
+
+    const student = students.find((candidate) => String(candidate.id) === studentId);
+    const fallbackStudentName = getEnrollmentStudentName(enrollment);
+    const fallbackStudentEmail = getEnrollmentStudentEmail(enrollment);
+    const key = `${courseId}-${studentId}`;
+
+    rowsByMembershipKey.set(key, {
+      courseId,
+      courseName: courseNames.get(courseId) || 'Unknown course',
+      studentId,
+      studentName: String(student?.name || student?.fullName || enrollment.studentName || fallbackStudentName || student?.email || fallbackStudentEmail || 'Unnamed student'),
+      studentEmail: String(student?.email || enrollment.studentEmail || fallbackStudentEmail || 'N/A'),
+      enrolledAt: getEnrollmentEnrolledAt(enrollment),
+      source: 'ENROLLMENT',
+    });
+  });
+
+  students.forEach((student) => {
+    const courseId = String(student.courseId ?? '');
+
+    if (!courseId) {
+      return;
+    }
+
+    if (selectedCourseId && courseId !== selectedCourseId) {
+      return;
+    }
+
+    if (!courseNames.has(courseId)) {
+      return;
+    }
+
+    const studentId = String(student.id);
+    const key = `${courseId}-${studentId}`;
+    const existing = rowsByMembershipKey.get(key);
+    const studentRecord = asRecord(student);
+    const studentUserRecord = asRecord(studentRecord.user);
+    const nestedStudentName = getRecordValue(studentUserRecord, ['name', 'fullName', 'full_name']);
+    const nestedStudentEmail = getRecordValue(studentUserRecord, ['email']);
+    const studentName = String(student.name || student.fullName || nestedStudentName || student.email || nestedStudentEmail || 'Unnamed student');
+    const studentEmail = String(student.email || nestedStudentEmail || 'N/A');
+    const enrolledAt = student.updatedAt || student.createdAt || existing?.enrolledAt;
+
+    rowsByMembershipKey.set(key, {
+      courseId,
+      courseName: courseNames.get(courseId) || 'Unknown course',
+      studentId,
+      studentName,
+      studentEmail,
+      enrolledAt,
+      source: existing ? 'BOTH' : 'DIRECT',
+    });
+  });
+
+  return [...rowsByMembershipKey.values()].sort((left, right) => (
+    left.courseName.localeCompare(right.courseName) || left.studentName.localeCompare(right.studentName)
+  ));
+};
+
 const CourseEnrollments: React.FC = () => {
   const { user } = useAuth();
   const { showToast } = useToast();
@@ -131,6 +216,7 @@ const CourseEnrollments: React.FC = () => {
   const [courses, setCourses] = useState<Course[]>([]);
   const [students, setStudents] = useState<PlatformUser[]>([]);
   const [classGroups, setClassGroups] = useState<ClassGroup[]>([]);
+  const [allEnrollments, setAllEnrollments] = useState<CourseEnrollment[]>([]);
   const [selectedCourseId, setSelectedCourseId] = useState('');
   const [selectedStudentId, setSelectedStudentId] = useState('');
   const [enrollments, setEnrollments] = useState<CourseEnrollment[]>([]);
@@ -154,6 +240,7 @@ const CourseEnrollments: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [tablePage, setTablePage] = useState(1);
   const requestedCourseId = searchParams.get('courseId') || '';
 
   const loadBaseData = useCallback(async (signal?: AbortSignal) => {
@@ -161,20 +248,24 @@ const CourseEnrollments: React.FC = () => {
       setCourses([]);
       setStudents([]);
       setClassGroups([]);
+      setAllEnrollments([]);
       setEnrollments([]);
       setSelectedCourseId('');
       return;
     }
 
-    const [allCourses, allStudents] = await Promise.all([
+    const [allCourses, allStudents, enrollmentRows] = await Promise.all([
       courseApi.getCourses(signal),
       userApi.getStudents(signal),
+      courseApi.getEnrollments(signal).catch(() => [] as CourseEnrollment[]),
     ]);
 
     const teacherCourses = filterCoursesByTeacher(allCourses, user.id);
+    const teacherCourseIds = new Set(teacherCourses.map((course) => String(course.id)));
 
     setCourses(teacherCourses);
     setStudents(allStudents);
+    setAllEnrollments(enrollmentRows.filter((row) => teacherCourseIds.has(getEnrollmentCourseId(row))));
     setSelectedCourseId((previous) => {
       if (previous && teacherCourses.some((course) => String(course.id) === previous)) {
         return previous;
@@ -205,16 +296,19 @@ const CourseEnrollments: React.FC = () => {
   }, []);
 
   const refreshMembershipState = useCallback(async (courseId: string, signal?: AbortSignal) => {
-    const [allStudents, courseEnrollments, courseClassGroups] = await Promise.all([
+    const [allStudents, everyEnrollment, courseEnrollments, courseClassGroups] = await Promise.all([
       userApi.getStudents(signal),
+      courseApi.getEnrollments(signal).catch(() => [] as CourseEnrollment[]),
       courseId ? courseApi.getEnrollmentsByCourse(courseId, signal).catch(() => [] as CourseEnrollment[]) : Promise.resolve([] as CourseEnrollment[]),
       courseId ? courseApi.getClassGroupsByCourse(courseId, signal).catch(() => [] as ClassGroup[]) : Promise.resolve([] as ClassGroup[]),
     ]);
+    const teacherCourseIds = new Set(courses.map((course) => String(course.id)));
 
     setStudents(allStudents);
+    setAllEnrollments(everyEnrollment.filter((row) => teacherCourseIds.has(getEnrollmentCourseId(row))));
     setEnrollments(courseEnrollments);
     setClassGroups(courseClassGroups);
-  }, []);
+  }, [courses]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -304,56 +398,23 @@ const CourseEnrollments: React.FC = () => {
   );
 
   const memberRows = useMemo(() => {
-    const rowsByStudentId = new Map<string, CourseMemberRow>();
+    if (!selectedCourseId) {
+      return [];
+    }
 
-    enrollments.forEach((enrollment) => {
-      const studentId = getEnrollmentStudentId(enrollment);
-      const courseId = getEnrollmentCourseId(enrollment) || selectedCourseId;
-      const student = students.find((candidate) => String(candidate.id) === studentId);
-      const fallbackStudentName = getEnrollmentStudentName(enrollment);
-      const fallbackStudentEmail = getEnrollmentStudentEmail(enrollment);
+    return buildCourseMemberRows(courses, students, enrollments, selectedCourseId);
+  }, [courses, enrollments, selectedCourseId, students]);
 
-      if (!studentId) {
-        return;
-      }
+  const tableRows = useMemo(() => {
+    const baseRows = selectedCourseId
+      ? buildCourseMemberRows(courses, students, allEnrollments, selectedCourseId)
+      : buildCourseMemberRows(courses, students, allEnrollments);
 
-      rowsByStudentId.set(studentId, {
-        courseId,
-        studentId,
-        studentName: String(student?.name || student?.fullName || enrollment.studentName || fallbackStudentName || student?.email || fallbackStudentEmail || 'Unnamed student'),
-        studentEmail: String(student?.email || enrollment.studentEmail || fallbackStudentEmail || 'N/A'),
-        enrolledAt: getEnrollmentEnrolledAt(enrollment),
-        source: 'ENROLLMENT',
-      });
+    return baseRows.filter((member) => {
+      const haystack = `${member.courseName} ${member.studentName} ${member.studentEmail} ${getMembershipSourceLabel(member.source)}`.toLowerCase();
+      return haystack.includes(search.toLowerCase());
     });
-
-    students.forEach((student) => {
-      if (String(student.courseId ?? '') !== selectedCourseId) {
-        return;
-      }
-
-      const studentId = String(student.id);
-      const existing = rowsByStudentId.get(studentId);
-      const studentRecord = asRecord(student);
-      const studentUserRecord = asRecord(studentRecord.user);
-      const nestedStudentName = getRecordValue(studentUserRecord, ['name', 'fullName', 'full_name']);
-      const nestedStudentEmail = getRecordValue(studentUserRecord, ['email']);
-      const studentName = String(student.name || student.fullName || nestedStudentName || student.email || nestedStudentEmail || 'Unnamed student');
-      const studentEmail = String(student.email || nestedStudentEmail || 'N/A');
-      const enrolledAt = student.updatedAt || student.createdAt || existing?.enrolledAt;
-
-      rowsByStudentId.set(studentId, {
-        courseId: selectedCourseId,
-        studentId,
-        studentName,
-        studentEmail,
-        enrolledAt,
-        source: existing ? 'BOTH' : 'DIRECT',
-      });
-    });
-
-    return [...rowsByStudentId.values()].sort((left, right) => left.studentName.localeCompare(right.studentName));
-  }, [enrollments, selectedCourseId, students]);
+  }, [allEnrollments, courses, search, selectedCourseId, students]);
 
   const enrolledStudentIds = useMemo(
     () => new Set(memberRows.map((row) => row.studentId)),
@@ -367,18 +428,26 @@ const CourseEnrollments: React.FC = () => {
     [enrolledStudentIds, students],
   );
 
-  const visibleEnrollments = useMemo(
-    () => memberRows.filter((member) => {
-      const haystack = `${member.studentName} ${member.studentEmail} ${getMembershipSourceLabel(member.source)}`.toLowerCase();
-      return haystack.includes(search.toLowerCase());
-    }),
-    [memberRows, search],
-  );
-
   const validBulkRows = useMemo(
     () => bulkRows.filter((row) => row.errors.length === 0),
     [bulkRows],
   );
+
+  const totalTablePages = Math.max(1, Math.ceil(tableRows.length / ROWS_PER_PAGE));
+  const paginatedTableRows = useMemo(
+    () => tableRows.slice((tablePage - 1) * ROWS_PER_PAGE, tablePage * ROWS_PER_PAGE),
+    [tablePage, tableRows],
+  );
+
+  useEffect(() => {
+    setTablePage(1);
+  }, [search, selectedCourseId]);
+
+  useEffect(() => {
+    if (tablePage > totalTablePages) {
+      setTablePage(totalTablePages);
+    }
+  }, [tablePage, totalTablePages]);
 
   const currentBulkCourseId = bulkAssignToCourse ? selectedCourseId : '';
 
@@ -430,7 +499,9 @@ const CourseEnrollments: React.FC = () => {
   };
 
   const handleRemove = async (member: CourseMemberRow) => {
-    if (!selectedCourseId) {
+    const targetCourseId = member.courseId;
+
+    if (!targetCourseId) {
       return;
     }
 
@@ -442,7 +513,7 @@ const CourseEnrollments: React.FC = () => {
 
       if (member.source === 'ENROLLMENT' || member.source === 'BOTH') {
         try {
-          await courseApi.deleteEnrollment({ courseId: selectedCourseId, studentId: member.studentId });
+          await courseApi.deleteEnrollment({ courseId: targetCourseId, studentId: member.studentId });
           changed = true;
         } catch (err) {
           if (!isNullParseEnrollmentError(err) && member.source === 'ENROLLMENT') {
@@ -460,7 +531,7 @@ const CourseEnrollments: React.FC = () => {
         throw new Error('The backend did not accept the membership removal request.');
       }
 
-      await refreshMembershipState(selectedCourseId);
+      await refreshMembershipState(selectedCourseId || targetCourseId);
       showToast('success', 'Membership removed', 'The student was removed from this course.');
     } catch (err) {
       setError(extractErrorMessage(err, 'Failed to remove the selected enrollment.'));
@@ -608,7 +679,7 @@ const CourseEnrollments: React.FC = () => {
       <div className="stat-grid" style={{ marginBottom: '20px' }}>
         <div className="stat-card"><div className="stat-card-value">{courses.length}</div><div className="stat-card-label">Managed Courses</div></div>
         <div className="stat-card"><div className="stat-card-value">{students.length}</div><div className="stat-card-label">Registered Students</div></div>
-        <div className="stat-card"><div className="stat-card-value">{memberRows.length}</div><div className="stat-card-label">Students In Selected Course</div></div>
+        <div className="stat-card"><div className="stat-card-value">{tableRows.length}</div><div className="stat-card-label">Visible Enrollment Rows</div></div>
         <div className="stat-card"><div className="stat-card-value">{bulkRows.length}</div><div className="stat-card-label">Rows In Bulk Queue</div></div>
       </div>
 
@@ -919,14 +990,14 @@ const CourseEnrollments: React.FC = () => {
       <div className="content-card">
         <div className="content-card-header">
           <div>
-            <h2>Current Course Roster</h2>
+            <h2>Course Enrollments Table</h2>
             <p style={{ margin: '6px 0 0', fontSize: '13px', color: '#666' }}>
               {selectedCourse
-                ? `Live roster for ${selectedCourse.name}, including both enrollment records and direct student-course assignments.`
-                : 'Choose a course to view and manage its current roster.'}
+                ? `Showing enrolled students for ${selectedCourse.name}.`
+                : 'Showing enrolled students across all of your courses.'}
             </p>
           </div>
-          {selectedCourse && <span className="enroll-badge-count">{memberRows.length} linked students</span>}
+          <span className="enroll-badge-count">{tableRows.length} total rows</span>
         </div>
 
         <div className="content-card-body" style={{ paddingTop: 0 }}>
@@ -936,21 +1007,21 @@ const CourseEnrollments: React.FC = () => {
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Search by name, email, or source..."
-              disabled={!selectedCourseId}
             />
           </div>
 
           <div className="students-table-wrap">
-            {refreshing && memberRows.length === 0 ? (
-              <div style={{ padding: '24px' }}>Loading course roster...</div>
-            ) : visibleEnrollments.length === 0 ? (
+            {refreshing && tableRows.length === 0 ? (
+              <div style={{ padding: '24px' }}>Loading course enrollments...</div>
+            ) : tableRows.length === 0 ? (
               <div className="students-empty" style={{ padding: '40px 20px' }}>
-                <p>{selectedCourseId ? 'No students are linked to this course yet.' : 'Select a course to see its roster, direct assignments, and enrollment records.'}</p>
+                <p>{selectedCourseId ? 'No students are linked to this course yet.' : 'No enrolled students were found for your courses yet.'}</p>
               </div>
             ) : (
               <table className="students-table">
                 <thead>
                   <tr>
+                    <th>Course</th>
                     <th>Student</th>
                     <th>Source</th>
                     <th>Enrolled At</th>
@@ -958,8 +1029,11 @@ const CourseEnrollments: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleEnrollments.map((member) => (
+                  {paginatedTableRows.map((member) => (
                     <tr key={`${member.courseId}-${member.studentId}`}>
+                      <td>
+                        <div className="students-table-name">{member.courseName}</div>
+                      </td>
                       <td>
                         <div className="students-table-avatar">
                           <div className="students-avatar-letter">{member.studentName.charAt(0).toUpperCase() || '?'}</div>
@@ -984,6 +1058,43 @@ const CourseEnrollments: React.FC = () => {
               </table>
             )}
           </div>
+
+          {tableRows.length > 0 && (
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: '12px',
+              marginTop: '16px',
+              flexWrap: 'wrap',
+            }}>
+              <div style={{ fontSize: '12px', color: '#666' }}>
+                Showing {Math.min((tablePage - 1) * ROWS_PER_PAGE + 1, tableRows.length)}-
+                {Math.min(tablePage * ROWS_PER_PAGE, tableRows.length)} of {tableRows.length}
+              </div>
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  type="button"
+                  disabled={tablePage <= 1}
+                  onClick={() => setTablePage((previous) => Math.max(1, previous - 1))}
+                >
+                  Previous
+                </button>
+                <span style={{ fontSize: '12px', fontWeight: 700, color: '#4a5568' }}>
+                  Page {tablePage} of {totalTablePages}
+                </span>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  type="button"
+                  disabled={tablePage >= totalTablePages}
+                  onClick={() => setTablePage((previous) => Math.min(totalTablePages, previous + 1))}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
