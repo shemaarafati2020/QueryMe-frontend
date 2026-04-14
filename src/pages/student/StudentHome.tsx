@@ -1,109 +1,247 @@
-import React from 'react';
-import { useAuth } from '../../contexts';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { examApi, resultApi, sessionApi, type Exam, type StudentExamResult } from '../../api';
+import { useAuth } from '../../contexts';
+import { extractErrorMessage } from '../../utils/errorUtils';
+import {
+  formatDateTime,
+  getCourseName,
+  getExamTimeLimit,
+  isExamPublished,
+} from '../../utils/queryme';
 
-// Mock data
-const upcomingExams = [
-  { id: 1, title: 'SQL Basics - Midterm', course: 'Database Systems', date: '2026-04-02', duration: '90 min', questions: 8 },
-  { id: 2, title: 'Advanced Joins Quiz', course: 'Database Systems', date: '2026-04-05', duration: '45 min', questions: 5 },
-  { id: 3, title: 'Subqueries & Aggregation', course: 'Data Management', date: '2026-04-10', duration: '60 min', questions: 6 },
-];
+interface UpcomingExamItem {
+  id: string;
+  title: string;
+  course: string;
+  duration: string;
+  visibilityMode: string;
+}
 
-const recentResults = [
-  { id: 1, title: 'SELECT Basics Quiz', score: 85, total: 100, date: '2026-03-25', status: 'passed' },
-  { id: 2, title: 'CREATE TABLE Exercise', score: 92, total: 100, date: '2026-03-20', status: 'passed' },
-  { id: 3, title: 'WHERE Clause Practice', score: 45, total: 100, date: '2026-03-15', status: 'failed' },
-];
+interface RecentResultItem {
+  sessionId: string;
+  examId: string;
+  title: string;
+  course: string;
+  submittedAt: string;
+  score: number;
+  total: number;
+  visible: boolean;
+  statusLabel: string;
+}
 
 const StudentHome: React.FC = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const [upcomingExams, setUpcomingExams] = useState<UpcomingExamItem[]>([]);
+  const [recentResults, setRecentResults] = useState<RecentResultItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    const loadDashboard = async () => {
+      if (!user) {
+        setError('Please sign in to see your dashboard.');
+        setLoading(false);
+        return;
+      }
+
+      setLoading(true);
+      setError(null);
+
+      try {
+        const [publishedExams, sessions] = await Promise.all([
+          examApi.getPublishedExams(controller.signal),
+          sessionApi.getSessionsByStudent(user.id, controller.signal),
+        ]);
+
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        setUpcomingExams(
+          publishedExams
+            .filter(isExamPublished)
+            .map((exam) => ({
+              id: String(exam.id),
+              title: exam.title,
+              course: getCourseName(exam.course, exam.courseId),
+              duration: getExamTimeLimit(exam) ? `${getExamTimeLimit(exam)} min` : 'No limit',
+              visibilityMode: String(exam.visibilityMode || 'N/A'),
+            })),
+        );
+
+        const recentSessionDetails = await Promise.all(
+          [...sessions]
+            .sort((left, right) => {
+              const leftTime = new Date(left.submittedAt || left.startedAt || 0).getTime();
+              const rightTime = new Date(right.submittedAt || right.startedAt || 0).getTime();
+              return rightTime - leftTime;
+            })
+            .slice(0, 4)
+            .map(async (session) => {
+              const [exam, result] = await Promise.all([
+                examApi.getExam(String(session.examId), controller.signal).catch(() => null as Exam | null),
+                resultApi.getSessionResult(String(session.id), controller.signal).catch(() => null as StudentExamResult | null),
+              ]);
+
+              return {
+                session,
+                exam,
+                result,
+              };
+            }),
+        );
+
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        setRecentResults(
+          recentSessionDetails.map(({ session, exam, result }) => {
+            const total = result?.totalMaxScore ?? 0;
+            const score = result?.totalScore ?? 0;
+            const visible = result?.visible ?? false;
+            const statusLabel = visible
+              ? total > 0 && score >= total / 2
+                ? 'Passed'
+                : 'Reviewed'
+              : (session.isSubmitted || session.submittedAt) ? 'Awaiting release' : 'In progress';
+
+            return {
+              sessionId: String(session.id),
+              examId: String(session.examId),
+              title: exam?.title || 'Exam',
+              course: getCourseName(exam?.course, exam?.courseId),
+              submittedAt: session.submittedAt || session.startedAt || '',
+              score,
+              total,
+              visible,
+              statusLabel,
+            };
+          }),
+        );
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setError(extractErrorMessage(err, 'Unable to load your dashboard.'));
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void loadDashboard();
+
+    return () => controller.abort();
+  }, [user]);
+
+  const averageScore = useMemo(() => {
+    const visibleResults = recentResults.filter((result) => result.visible && result.total > 0);
+    if (visibleResults.length === 0) {
+      return 0;
+    }
+
+    return Math.round(
+      visibleResults.reduce((sum, result) => sum + (result.score / result.total) * 100, 0) / visibleResults.length,
+    );
+  }, [recentResults]);
 
   const getGreeting = () => {
-    const h = new Date().getHours();
-    if (h < 12) return 'Good Morning';
-    if (h < 17) return 'Good Afternoon';
-    return 'Good Evening';
+    const hour = new Date().getHours();
+    if (hour < 12) {
+      return 'Good morning';
+    }
+    if (hour < 17) {
+      return 'Good afternoon';
+    }
+    return 'Good evening';
   };
+
+  if (loading) {
+    return (
+      <div>
+        <div className="page-header">
+          <h1>{getGreeting()}, {user?.name?.split(' ')[0] || 'Student'}</h1>
+          <p>Loading your exam activity from the backend.</p>
+        </div>
+        <div style={{ textAlign: 'center', padding: '40px' }}>Loading dashboard...</div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div>
+        <div className="page-header">
+          <h1>Student Dashboard</h1>
+          <p>Review your available exams and recent session outcomes.</p>
+        </div>
+        <div style={{ textAlign: 'center', padding: '40px', color: 'red' }}>{error}</div>
+      </div>
+    );
+  }
 
   return (
     <div>
-      {/* Page Header */}
       <div className="page-header">
-        <h1>{getGreeting()}, {user?.name?.split(' ')[0]} 👋</h1>
-        <p>Here's an overview of your SQL exam activities</p>
+        <h1>{getGreeting()}, {user?.name?.split(' ')[0] || 'Student'}</h1>
+        <p>Your exam feed is now connected to live backend data.</p>
       </div>
 
-      {/* Stats */}
       <div className="stat-grid">
         <div className="stat-card">
-          <div className="stat-card-icon" style={{ background: 'rgba(106, 60, 176, 0.1)' }}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6a3cb0" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" />
-            </svg>
-          </div>
-          <div className="stat-card-value">3</div>
-          <div className="stat-card-label">Upcoming Exams</div>
+          <div className="stat-card-value">{upcomingExams.length}</div>
+          <div className="stat-card-label">Available Exams</div>
         </div>
-
         <div className="stat-card">
-          <div className="stat-card-icon" style={{ background: 'rgba(56, 161, 105, 0.1)' }}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#38a169" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="20 6 9 17 4 12" />
-            </svg>
-          </div>
-          <div className="stat-card-value">12</div>
-          <div className="stat-card-label">Exams Completed</div>
+          <div className="stat-card-value">{recentResults.length}</div>
+          <div className="stat-card-label">Recent Sessions</div>
         </div>
-
         <div className="stat-card">
-          <div className="stat-card-icon" style={{ background: 'rgba(49, 130, 206, 0.1)' }}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#3182ce" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" />
-            </svg>
-          </div>
-          <div className="stat-card-value">78%</div>
-          <div className="stat-card-label">Average Score</div>
+          <div className="stat-card-value">{averageScore}%</div>
+          <div className="stat-card-label">Visible Average</div>
         </div>
-
         <div className="stat-card">
-          <div className="stat-card-icon" style={{ background: 'rgba(221, 107, 32, 0.1)' }}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#dd6b20" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
-            </svg>
+          <div className="stat-card-value">
+            {recentResults.filter((result) => result.visible).length}
           </div>
-          <div className="stat-card-value">47</div>
-          <div className="stat-card-label">Queries Submitted</div>
+          <div className="stat-card-label">Released Results</div>
         </div>
       </div>
 
-      {/* Two-column layout */}
       <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '18px' }}>
-        {/* Upcoming Exams */}
         <div className="content-card">
           <div className="content-card-header">
-            <h2>📋 Upcoming Exams</h2>
-            <button className="btn btn-secondary btn-sm" onClick={() => navigate('/student/exams')}>View All</button>
+            <h2>Available Exams</h2>
+            <button className="btn btn-secondary btn-sm" onClick={() => navigate('/student/exams')}>
+              View All
+            </button>
           </div>
           <div className="content-card-body" style={{ padding: 0 }}>
             <table className="data-table">
               <thead>
                 <tr>
                   <th>Exam</th>
-                  <th>Date</th>
                   <th>Duration</th>
+                  <th>Visibility</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
-                {upcomingExams.map(exam => (
+                {upcomingExams.map((exam) => (
                   <tr key={exam.id}>
                     <td>
                       <div style={{ fontWeight: 600, color: '#1a1a2e' }}>{exam.title}</div>
                       <div style={{ fontSize: '11px', color: '#888', marginTop: '2px' }}>{exam.course}</div>
                     </td>
-                    <td style={{ fontSize: '12px', color: '#666' }}>{new Date(exam.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</td>
-                    <td><span className="badge badge-purple">{exam.duration}</span></td>
+                    <td>{exam.duration}</td>
+                    <td>
+                      <span className="badge badge-gray">{exam.visibilityMode}</span>
+                    </td>
                     <td>
                       <button className="btn btn-primary btn-sm" onClick={() => navigate(`/student/exam-session/${exam.id}`)}>
                         Start
@@ -111,41 +249,60 @@ const StudentHome: React.FC = () => {
                     </td>
                   </tr>
                 ))}
+                {upcomingExams.length === 0 && (
+                  <tr>
+                    <td colSpan={4} style={{ textAlign: 'center', padding: '24px', color: '#666' }}>
+                      No published exams are available right now.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
         </div>
 
-        {/* Recent Results */}
         <div className="content-card">
           <div className="content-card-header">
-            <h2>📊 Recent Results</h2>
-            <button className="btn btn-secondary btn-sm" onClick={() => navigate('/student/results')}>View All</button>
+            <h2>Recent Results</h2>
+            <button className="btn btn-secondary btn-sm" onClick={() => navigate('/student/results')}>
+              View All
+            </button>
           </div>
           <div className="content-card-body" style={{ padding: 0 }}>
             <table className="data-table">
               <thead>
                 <tr>
                   <th>Exam</th>
-                  <th>Score</th>
+                  <th>Submitted</th>
                   <th>Status</th>
                 </tr>
               </thead>
               <tbody>
-                {recentResults.map(r => (
-                  <tr key={r.id}>
+                {recentResults.map((result) => (
+                  <tr key={result.sessionId}>
                     <td>
-                      <div style={{ fontWeight: 600, color: '#1a1a2e' }}>{r.title}</div>
-                      <div style={{ fontSize: '11px', color: '#888', marginTop: '2px' }}>{new Date(r.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</div>
+                      <div style={{ fontWeight: 600, color: '#1a1a2e' }}>{result.title}</div>
+                      <div style={{ fontSize: '11px', color: '#888', marginTop: '2px' }}>{result.course}</div>
                     </td>
-                    <td style={{ fontWeight: 700, color: '#1a1a2e' }}>{r.score}/{r.total}</td>
+                    <td style={{ fontSize: '12px' }}>{formatDateTime(result.submittedAt)}</td>
                     <td>
-                      <span className={`badge ${r.status === 'passed' ? 'badge-green' : 'badge-red'}`}>
-                        {r.status}
-                      </span>
+                      {result.visible ? (
+                        <span className="badge badge-green">
+                          {result.score}/{result.total}
+                        </span>
+                      ) : (
+                        <span className="badge badge-gray">{result.statusLabel}</span>
+                      )}
                     </td>
                   </tr>
                 ))}
+                {recentResults.length === 0 && (
+                  <tr>
+                    <td colSpan={3} style={{ textAlign: 'center', padding: '24px', color: '#666' }}>
+                      Your recent session history will appear here.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

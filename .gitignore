@@ -22,3 +22,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+# envrionment variable files
+.env
+.env.*.local
+.env.local
+.env.*.local
+.codex
+BACKEND_ENPOINTS.md

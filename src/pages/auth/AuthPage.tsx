@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Navigate } from 'react-router-dom';
 import { useAuth } from '../../contexts';
-import type { UserRole } from '../../contexts';
 import logoImg from '../../assets/logo.png';
+import { clearRememberedEmail, getRememberedEmail, setRememberedEmail } from '../../utils/authStorage';
+import { extractErrorMessage } from '../../utils/errorUtils';
 import './AuthPage.css';
 
 const ROLE_REDIRECTS: Record<string, string> = {
@@ -21,10 +22,11 @@ const AuthPage: React.FC = () => {
   const [loginPassword, setLoginPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(false);
   const [loginError, setLoginError] = useState('');
+  const [isSigningIn, setIsSigningIn] = useState(false);
 
   // Check for remembered email on mount
   useEffect(() => {
-    const savedEmail = localStorage.getItem('rememberedEmail');
+    const savedEmail = getRememberedEmail();
     if (savedEmail) {
       setLoginEmail(savedEmail);
       setRememberMe(true);
@@ -35,10 +37,8 @@ const AuthPage: React.FC = () => {
   const [signupName, setSignupName] = useState('');
   const [signupEmail, setSignupEmail] = useState('');
   const [signupPassword, setSignupPassword] = useState('');
-  const [signupRole, setSignupRole] = useState<UserRole>('STUDENT');
-  const [signupGuestDuration, setSignupGuestDuration] = useState('24');
   const [signupError, setSignupError] = useState('');
-  const [guestSuccessMsg, setGuestSuccessMsg] = useState('');
+  const [isSigningUp, setIsSigningUp] = useState(false);
 
   if (isAuthenticated && user) {
     const dest = ROLE_REDIRECTS[user.role] || '/student';
@@ -47,41 +47,36 @@ const AuthPage: React.FC = () => {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSigningIn) return;
     setLoginError('');
+    setIsSigningIn(true);
     try {
-      await login(loginEmail, loginPassword);
-      // If successful, handle Remember Me
+      await login(loginEmail, loginPassword, rememberMe);
       if (rememberMe) {
-        localStorage.setItem('rememberedEmail', loginEmail);
+        setRememberedEmail(loginEmail);
       } else {
-        localStorage.removeItem('rememberedEmail');
+        clearRememberedEmail();
       }
-    } catch {
-      setLoginError('Invalid email or password. Try the demo credentials below.');
+    } catch (error) {
+      setLoginError(extractErrorMessage(error, 'Invalid email or password.'));
+    } finally {
+      setIsSigningIn(false);
     }
   };
 
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSigningUp) return;
     setSignupError('');
-    setGuestSuccessMsg('');
-
-    if (signupRole === 'GUEST') {
-      setGuestSuccessMsg(`Guest access request for ${signupGuestDuration} hours has been sent to the Admin!`);
-      return;
-    }
+    setIsSigningUp(true);
 
     try {
-      await signup(signupName, signupEmail, signupPassword, signupRole);
-    } catch {
-      setSignupError('Signup failed. Please try again.');
+      await signup(signupName, signupEmail, signupPassword);
+    } catch (error) {
+      setSignupError(extractErrorMessage(error, 'Signup failed. Please try again.'));
+    } finally {
+      setIsSigningUp(false);
     }
-  };
-
-  const fillDemoCredentials = (email: string, password: string) => {
-    setLoginEmail(email);
-    setLoginPassword(password);
-    setLoginError('');
   };
 
   return (
@@ -95,46 +90,28 @@ const AuthPage: React.FC = () => {
             </div>
             <h1 className="auth-title">Create Account</h1>
 
-            <input type="text" placeholder="Name" value={signupName} onChange={(e) => setSignupName(e.target.value)} id="signup-name-input" />
-            <input type="email" placeholder="Email" value={signupEmail} onChange={(e) => setSignupEmail(e.target.value)} id="signup-email-input" />
-            
-            {signupRole !== 'GUEST' && (
-              <input type="password" placeholder="Password" value={signupPassword} onChange={(e) => setSignupPassword(e.target.value)} id="signup-password-input" />
-            )}
-
-            {/* Role dropdown */}
+            <input type="text" placeholder="Name" value={signupName} onChange={(e) => setSignupName(e.target.value)} id="signup-name-input" autoComplete="name" disabled={isSigningUp} />
+            <input type="email" placeholder="Email" value={signupEmail} onChange={(e) => setSignupEmail(e.target.value)} id="signup-email-input" autoComplete="email" disabled={isSigningUp} />
+            <input type="password" placeholder="Password" value={signupPassword} onChange={(e) => setSignupPassword(e.target.value)} id="signup-password-input" autoComplete="new-password" disabled={isSigningUp} />
             <div className="auth-select-wrapper">
-              <select
-                className="auth-select"
-                value={signupRole}
-                onChange={(e) => setSignupRole(e.target.value as UserRole)}
-                id="signup-role-select"
-              >
-                <option value="STUDENT">Student</option>
-                <option value="TEACHER">Teacher</option>
-                <option value="ADMIN">Admin</option>
-                <option value="GUEST">Guest</option>
-              </select>
-              <span className="auth-select-arrow">▾</span>
+              <div className="auth-select" id="signup-role-select" aria-disabled="true">
+                Student Account
+              </div>
+              <span className="auth-select-arrow">🔒</span>
+            </div>
+            <div className="auth-demo-label" style={{ marginBottom: 12 }}>
+              Public signup is limited to student accounts. Teacher, admin, and guest access are provisioned separately.
             </div>
 
-            {signupRole === 'GUEST' && (
-              <input 
-                type="number" 
-                placeholder="Requested Session Duration (Hours)" 
-                value={signupGuestDuration} 
-                onChange={(e) => setSignupGuestDuration(e.target.value)} 
-                min="1" 
-                max="720"
-                style={{ marginTop: '-4px' }}
-              />
-            )}
-
             {signupError && <span className="auth-error">{signupError}</span>}
-            {guestSuccessMsg && <span className="auth-error" style={{ color: '#38a169', background: 'rgba(56,161,105,0.1)' }}>{guestSuccessMsg}</span>}
 
-            <button type="submit" className="auth-btn" id="signup-submit-btn">
-              {signupRole === 'GUEST' ? 'REQUEST ACCESS' : 'SIGN UP'}
+            <button type="submit" className="auth-btn" id="signup-submit-btn" disabled={isSigningUp}>
+              {isSigningUp ? (
+                <span className="auth-btn-content">
+                  <span className="auth-spinner" aria-hidden="true" />
+                  Signing up...
+                </span>
+              ) : 'SIGN UP'}
             </button>
           </form>
         </div>
@@ -147,8 +124,8 @@ const AuthPage: React.FC = () => {
             </div>
             <h1 className="auth-title">Sign In</h1>
 
-            <input type="text" placeholder="Email" value={loginEmail} onChange={(e) => { setLoginEmail(e.target.value); setLoginError(''); }} id="signin-email-input" />
-            <input type="password" placeholder="Password" value={loginPassword} onChange={(e) => { setLoginPassword(e.target.value); setLoginError(''); }} id="signin-password-input" />
+            <input type="text" placeholder="Email" value={loginEmail} onChange={(e) => { setLoginEmail(e.target.value); setLoginError(''); }} id="signin-email-input" autoComplete="email" disabled={isSigningIn} />
+            <input type="password" placeholder="Password" value={loginPassword} onChange={(e) => { setLoginPassword(e.target.value); setLoginError(''); }} id="signin-password-input" autoComplete="current-password" disabled={isSigningIn} />
 
             {loginError && <span className="auth-error">{loginError}</span>}
 
@@ -159,6 +136,7 @@ const AuthPage: React.FC = () => {
                   checked={rememberMe} 
                   onChange={(e) => setRememberMe(e.target.checked)} 
                   id="remember-me-checkbox"
+                  disabled={isSigningIn}
                 />
                 <span className="checkmark"></span>
                 Remember Me
@@ -166,18 +144,14 @@ const AuthPage: React.FC = () => {
               <a href="#" className="auth-forgot-link" id="forgot-password-link">Forget Your Password?</a>
             </div>
 
-            <button type="submit" className="auth-btn" id="signin-submit-btn">SIGN IN</button>
-
-            {/* Demo credentials quick-fill */}
-            <div className="auth-demo-creds">
-              <span className="auth-demo-label">Demo accounts:</span>
-              <div className="auth-demo-buttons">
-                <button type="button" className="auth-demo-btn" onClick={() => fillDemoCredentials('admin@queryme.com', 'admin123')}>Admin</button>
-                <button type="button" className="auth-demo-btn" onClick={() => fillDemoCredentials('teacher@queryme.com', 'teacher123')}>Teacher</button>
-                <button type="button" className="auth-demo-btn auth-demo-btn--active" onClick={() => fillDemoCredentials('student@queryme.com', 'student123')}>Student</button>
-                <button type="button" className="auth-demo-btn" onClick={() => fillDemoCredentials('guest@queryme.com', 'guest123')}>Guest</button>
-              </div>
-            </div>
+            <button type="submit" className="auth-btn" id="signin-submit-btn" disabled={isSigningIn}>
+              {isSigningIn ? (
+                <span className="auth-btn-content">
+                  <span className="auth-spinner" aria-hidden="true" />
+                  Signing in...
+                </span>
+              ) : 'SIGN IN'}
+            </button>
           </form>
         </div>
 
@@ -187,12 +161,12 @@ const AuthPage: React.FC = () => {
             <div className="auth-toggle-panel auth-toggle-left">
               <h1>Welcome Back!</h1>
               <p>Enter your personal details to use all of site features</p>
-              <button className="auth-toggle-btn" id="switch-to-signin-btn" onClick={() => setIsSignUp(false)}>SIGN IN</button>
+              <button className="auth-toggle-btn" id="switch-to-signin-btn" onClick={() => setIsSignUp(false)} disabled={isSigningIn || isSigningUp}>SIGN IN</button>
             </div>
             <div className="auth-toggle-panel auth-toggle-right">
               <h1>Hello, Friend!</h1>
               <p>Register with your personal details to use all of site features</p>
-              <button className="auth-toggle-btn" id="switch-to-signup-btn" onClick={() => setIsSignUp(true)}>SIGN UP</button>
+              <button className="auth-toggle-btn" id="switch-to-signup-btn" onClick={() => setIsSignUp(true)} disabled={isSigningIn || isSigningUp}>SIGN UP</button>
             </div>
           </div>
         </div>

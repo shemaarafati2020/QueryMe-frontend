@@ -1,5 +1,5 @@
-import React from 'react';
-import { Routes, Route } from 'react-router-dom';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Link, Routes, Route } from 'react-router-dom';
 import DashboardLayout from '../../layout/DashboardLayout';
 import ExamBuilder from './ExamBuilder';
 import ResultsDashboard from './ResultsDashboard';
@@ -7,10 +7,23 @@ import ExamsList from './ExamsList';
 import TeacherProfile from './TeacherProfile';
 import ExamSessionsMonitor from './ExamSessionsMonitor';
 import CourseEnrollments from './CourseEnrollments';
+import TeacherCourses from './TeacherCourses';
+import { courseApi, examApi, resultApi, type Exam, type TeacherResultRow } from '../../api';
+import { useAuth } from '../../contexts';
 import type { NavItem } from '../../layout/DashboardLayout';
+import { extractErrorMessage } from '../../utils/errorUtils';
+import { filterCoursesByTeacher, normalizeExamStatus } from '../../utils/queryme';
 import './TeacherPages.css';
 
-/* ── Icons ── */
+interface RecentStudentActivity {
+  studentId: string;
+  studentName: string;
+  submissionCount: number;
+  latestSubmittedAt: string | null;
+}
+
+const getSubmissionTimestamp = (submittedAt?: string) => new Date(submittedAt || 0).getTime();
+
 const HomeIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><polyline points="9 22 9 12 15 12 15 22" />
@@ -19,6 +32,12 @@ const HomeIcon = () => (
 const ExamIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" />
+  </svg>
+);
+const CourseIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
   </svg>
 );
 const SessionsIcon = () => (
@@ -38,203 +57,247 @@ const StudentsIcon = () => (
   </svg>
 );
 
-/* ── Nav ── */
 const teacherNav: NavItem[] = [
-  { label: 'Dashboard', path: '/teacher',          icon: <HomeIcon /> },
-  { label: 'Exams',     path: '/teacher/exams',    icon: <ExamIcon /> },
-  { label: 'Sessions',  path: '/teacher/sessions', icon: <SessionsIcon /> },
-  { label: 'Results',   path: '/teacher/results',  icon: <ResultsIcon /> },
-  { label: 'Students',  path: '/teacher/students', icon: <StudentsIcon /> },
+  { label: 'Dashboard', path: '/teacher', icon: <HomeIcon /> },
+  { label: 'Courses', path: '/teacher/courses', icon: <CourseIcon /> },
+  { label: 'Exams', path: '/teacher/exams', icon: <ExamIcon /> },
+  { label: 'Sessions', path: '/teacher/sessions', icon: <SessionsIcon /> },
+  { label: 'Results', path: '/teacher/results', icon: <ResultsIcon /> },
+  { label: 'Students', path: '/teacher/students', icon: <StudentsIcon /> },
 ];
 
-/* ── Mock data (mirrors exam_sessions + exams tables) ── */
-const recentSubmissions = [
-  { id: 1, student: 'Alice Brown',   initials: 'AB', exam: 'SQL Midterm – DB 101',      score: 92, total: 100, submittedAt: '2 mins ago',  status: 'Pending Review' },
-  { id: 2, student: 'Bob Wilson',    initials: 'BW', exam: 'SQL Midterm – DB 101',      score: 85, total: 100, submittedAt: '18 mins ago', status: 'Graded'         },
-  { id: 3, student: 'Faith Osei',    initials: 'FO', exam: 'Joins & Aggregates Quiz',   score: 88, total: 100, submittedAt: '34 mins ago', status: 'Graded'         },
-  { id: 4, student: 'George Kimani', initials: 'GK', exam: 'Joins & Aggregates Quiz',   score: 54, total: 100, submittedAt: '1 hr ago',    status: 'Pending Review' },
-  { id: 5, student: 'Diana Prince',  initials: 'DP', exam: 'Data Engineering Quiz 1',   score: 95, total: 100, submittedAt: '2 hrs ago',   status: 'Graded'         },
-];
+const TeacherDashboardHome: React.FC = () => {
+  const { user } = useAuth();
+  const [stats, setStats] = useState({
+    exams: 0,
+    published: 0,
+    drafts: 0,
+    submissions: 0,
+  });
+  const [submissionRows, setSubmissionRows] = useState<TeacherResultRow[]>([]);
+  const [courseExams, setCourseExams] = useState<Exam[]>([]);
+  const [courseNamesById, setCourseNamesById] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-const draftsAndUpcoming = [
-  { id: 'd1', title: 'Advanced Joins Final',      course: 'Advanced SQL',                  status: 'draft',     scheduledFor: ''                   },
-  { id: 'd2', title: 'Data Modeling Assessment',  course: 'Data Engineering Fundamentals', status: 'draft',     scheduledFor: ''                   },
-  { id: 'd3', title: 'SQL Syntax Refresher',      course: 'Database Systems 101',          status: 'published', scheduledFor: 'Apr 12, 2026 10:00' },
-  { id: 'd4', title: 'Normalisation Deep Dive',   course: 'Database Systems 101',          status: 'published', scheduledFor: 'Apr 18, 2026 14:00' },
-];
+  useEffect(() => {
+    const controller = new AbortController();
 
-const scoreColor = (s: number) => s >= 80 ? '#38a169' : s >= 60 ? '#dd6b20' : '#e53e3e';
-const statusColor: Record<string, string> = {
-  'Graded': '#38a169', 'Pending Review': '#dd6b20', 'Missed': '#e53e3e',
+    const loadDashboard = async () => {
+      if (!user) {
+        setLoading(false);
+        return;
+      }
+
+      setLoading(true);
+      setError(null);
+
+      try {
+        const courses = await courseApi.getCourses(controller.signal);
+        const teacherCourses = filterCoursesByTeacher(courses, user.id);
+        const nextCourseNamesById = teacherCourses.reduce<Record<string, string>>((acc, course) => {
+          const id = String(course.id || '');
+          const name = course.name?.trim();
+
+          if (id && name) {
+            acc[id] = name;
+          }
+
+          return acc;
+        }, {});
+        const examLists = await Promise.all(
+          teacherCourses.map((course) => examApi.getExamsByCourse(String(course.id), controller.signal).catch(() => [] as Exam[])),
+        );
+
+        const exams = [...new Map(
+          examLists
+            .flat()
+            .map((exam) => [String(exam.id), exam]),
+        ).values()];
+        const publishedExams = exams.filter((exam) => normalizeExamStatus(exam.status) === 'PUBLISHED');
+
+        const dashboards = await Promise.all(
+          publishedExams.map((exam) => resultApi.getExamDashboard(String(exam.id), controller.signal).catch(() => [] as TeacherResultRow[])),
+        );
+
+        const submissionRows = dashboards
+          .flat()
+          .sort((left, right) => getSubmissionTimestamp(right.submittedAt) - getSubmissionTimestamp(left.submittedAt));
+
+        if (!controller.signal.aborted) {
+          setStats({
+            exams: exams.length,
+            published: publishedExams.length,
+            drafts: exams.filter((exam) => normalizeExamStatus(exam.status) === 'DRAFT').length,
+            submissions: dashboards.flat().length,
+          });
+          setSubmissionRows(submissionRows);
+          setCourseExams(exams.slice(0, 6));
+          setCourseNamesById(nextCourseNamesById);
+        }
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setError(extractErrorMessage(err, 'Failed to load the teacher dashboard.'));
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void loadDashboard();
+    return () => controller.abort();
+  }, [user]);
+
+  const recentStudents = useMemo<RecentStudentActivity[]>(() => {
+    const grouped = new Map<string, RecentStudentActivity>();
+
+    submissionRows.forEach((row) => {
+      const studentId = String(row.studentId || 'Unknown');
+
+      if (!grouped.has(studentId)) {
+        grouped.set(studentId, {
+          studentId,
+          studentName: row.studentName || studentId,
+          submissionCount: 1,
+          latestSubmittedAt: row.submittedAt || null,
+        });
+        return;
+      }
+
+      const existing = grouped.get(studentId);
+      if (existing) {
+        existing.submissionCount += 1;
+      }
+    });
+
+    return Array.from(grouped.values()).slice(0, 5);
+  }, [submissionRows]);
+
+  const averageScore = useMemo(() => {
+    const validRows = submissionRows
+      .slice(0, 5)
+      .filter((row) => typeof row.score === 'number' && typeof row.maxScore === 'number' && row.maxScore > 0);
+
+    if (validRows.length === 0) {
+      return 0;
+    }
+
+    return Math.round(
+      validRows.reduce((sum, row) => sum + ((row.score || 0) / (row.maxScore || 1)) * 100, 0) / validRows.length,
+    );
+  }, [submissionRows]);
+
+  const getDashboardCourseName = (exam: Exam): string => (
+    exam.course?.name?.trim() || courseNamesById[String(exam.courseId)] || ''
+  );
+
+  if (loading) {
+    return <div style={{ padding: '24px' }}>Loading teacher dashboard...</div>;
+  }
+
+  return (
+    <div>
+      <div className="page-header" style={{ marginBottom: '20px' }}>
+        <h1>Teacher Dashboard</h1>
+        <p>Live overview for your backend-connected exam workspace.</p>
+      </div>
+
+      {error && <div style={{ marginBottom: '16px', color: '#e53e3e' }}>{error}</div>}
+
+      <div className="td-quick-actions">
+        <Link to="/teacher/courses" className="td-qa-btn td-qa-primary">Create Course</Link>
+        <Link to="/teacher/students" className="td-qa-btn td-qa-primary">Register Students</Link>
+        <Link to="/teacher/exams/builder" className="td-qa-btn td-qa-primary">Create New Exam</Link>
+        <Link to="/teacher/exams" className="td-qa-btn td-qa-secondary">Manage Exams</Link>
+        <Link to="/teacher/courses" className="td-qa-btn td-qa-secondary">Manage Courses</Link>
+        <Link to="/teacher/sessions" className="td-qa-btn td-qa-secondary">Live Sessions</Link>
+        <Link to="/teacher/results" className="td-qa-btn td-qa-secondary">Review Results</Link>
+      </div>
+
+      <div className="stat-grid" style={{ marginBottom: '24px' }}>
+        <div className="stat-card"><div className="stat-card-value">{stats.exams}</div><div className="stat-card-label">Total Exams</div></div>
+        <div className="stat-card"><div className="stat-card-value">{stats.published}</div><div className="stat-card-label">Published Exams</div></div>
+        <div className="stat-card"><div className="stat-card-value">{stats.submissions}</div><div className="stat-card-label">Tracked Submissions</div></div>
+        <div className="stat-card"><div className="stat-card-value">{averageScore}%</div><div className="stat-card-label">Recent Average</div></div>
+      </div>
+
+      <div className="td-lower-grid">
+        <div className="content-card">
+          <div className="content-card-header">
+            <h2>Recent Students</h2>
+            <Link to="/teacher/results" className="td-see-all">See all →</Link>
+          </div>
+          <div>
+            {recentStudents.map((student) => (
+              <div key={student.studentId} className="td-activity-row">
+                <div className="td-activity-avatar">{student.studentName.charAt(0).toUpperCase() || '?'}</div>
+                <div className="td-activity-info">
+                  <span className="td-activity-name">{student.studentName}</span>
+                  <span className="td-activity-exam">Latest submission received</span>
+                </div>
+                <div className="td-activity-meta">
+                  <span className="td-activity-score">
+                    {student.submissionCount} total
+                  </span>
+                  <span className="td-activity-time">
+                    {student.latestSubmittedAt ? new Date(student.latestSubmittedAt).toLocaleString() : 'N/A'}
+                  </span>
+                </div>
+              </div>
+            ))}
+            {recentStudents.length === 0 && (
+              <div style={{ padding: '16px 0', color: '#666' }}>Students with recent submissions will appear here.</div>
+            )}
+          </div>
+        </div>
+
+        <div className="content-card">
+          <div className="content-card-header">
+            <h2>Exams by Course</h2>
+            <Link to="/teacher/exams" className="td-see-all">Manage →</Link>
+          </div>
+          <div style={{ padding: '8px 0' }}>
+            {courseExams.map((exam) => {
+              const courseName = getDashboardCourseName(exam);
+
+              return (
+                <div key={String(exam.id)} className="td-draft-row">
+                  <div className="td-draft-info">
+                    <span className="td-draft-title">{exam.title}</span>
+                    {courseName ? <span className="td-draft-course">{courseName}</span> : null}
+                  </div>
+                  <div className="td-draft-right">
+                    <span className={`td-draft-badge ${normalizeExamStatus(exam.status) === 'PUBLISHED' ? 'td-badge-upcoming' : 'td-badge-draft'}`}>
+                      {normalizeExamStatus(exam.status) || 'DRAFT'}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+            {courseExams.length === 0 && (
+              <div style={{ padding: '16px 0', color: '#666' }}>Create your first course exam to populate this panel.</div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 };
 
-/* ── Dashboard Home ── */
-const TeacherDashboardHome: React.FC = () => (
-  <div>
-    {/* Header */}
-    <div className="page-header" style={{ marginBottom: '20px' }}>
-      <h1>Teacher Dashboard</h1>
-      <p>Good morning, Prof. Smith — here's what's happening today.</p>
-    </div>
-
-    {/* Quick Actions */}
-    <div className="td-quick-actions">
-      <a href="/teacher/exams/builder" className="td-qa-btn td-qa-primary">
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-          <polyline points="14 2 14 8 20 8"/>
-          <line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/>
-        </svg>
-        Create New Exam
-      </a>
-      <a href="/teacher/sessions" className="td-qa-btn td-qa-secondary">
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
-        </svg>
-        Live Sessions
-      </a>
-      <a href="/teacher/results" className="td-qa-btn td-qa-secondary">
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/>
-          <line x1="6" y1="20" x2="6" y2="14"/>
-        </svg>
-        Review Results
-      </a>
-      <a href="/teacher/students" className="td-qa-btn td-qa-secondary">
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
-        </svg>
-        Manage Students
-      </a>
-    </div>
-
-    {/* Stat cards */}
-    <div className="stat-grid" style={{ marginBottom: '24px' }}>
-      <div className="stat-card">
-        <div className="stat-card-icon" style={{ background: 'rgba(56,161,105,0.1)' }}>
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#38a169" strokeWidth="2">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-            <polyline points="14 2 14 8 20 8"/>
-          </svg>
-        </div>
-        <div className="stat-card-value">6</div>
-        <div className="stat-card-label">Active Exams</div>
-      </div>
-      <div className="stat-card">
-        <div className="stat-card-icon" style={{ background: 'rgba(49,130,206,0.1)' }}>
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#3182ce" strokeWidth="2">
-            <circle cx="12" cy="12" r="10"/>
-            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
-          </svg>
-        </div>
-        <div className="stat-card-value">38</div>
-        <div className="stat-card-label">Total Questions</div>
-      </div>
-      <div className="stat-card">
-        <div className="stat-card-icon" style={{ background: 'rgba(106,60,176,0.1)' }}>
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#6a3cb0" strokeWidth="2">
-            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
-          </svg>
-        </div>
-        <div className="stat-card-value">45</div>
-        <div className="stat-card-label">Students</div>
-      </div>
-      <div className="stat-card">
-        <div className="stat-card-icon" style={{ background: 'rgba(221,107,32,0.1)' }}>
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#dd6b20" strokeWidth="2">
-            <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/>
-            <line x1="6" y1="20" x2="6" y2="14"/>
-          </svg>
-        </div>
-        <div className="stat-card-value">74%</div>
-        <div className="stat-card-label">Avg. Class Score</div>
-      </div>
-    </div>
-
-    {/* Two-column lower section */}
-    <div className="td-lower-grid">
-
-      {/* ── Recent Submissions ── */}
-      <div className="content-card">
-        <div className="content-card-header">
-          <h2>Recent Submissions</h2>
-          <a href="/teacher/results" className="td-see-all">See all →</a>
-        </div>
-        <div>
-          {recentSubmissions.map(s => (
-            <div key={s.id} className="td-activity-row">
-              <div className="td-activity-avatar">{s.initials}</div>
-              <div className="td-activity-info">
-                <span className="td-activity-name">{s.student}</span>
-                <span className="td-activity-exam">{s.exam}</span>
-              </div>
-              <div className="td-activity-meta">
-                <span className="td-activity-score" style={{ color: scoreColor(s.score) }}>
-                  {s.score}/{s.total}
-                </span>
-                <span className="td-activity-status" style={{ color: statusColor[s.status] }}>
-                  ● {s.status}
-                </span>
-                <span className="td-activity-time">{s.submittedAt}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* ── Drafts & Upcoming Exams ── */}
-      <div className="content-card">
-        <div className="content-card-header">
-          <h2>Drafts &amp; Upcoming</h2>
-          <a href="/teacher/exams" className="td-see-all">Manage →</a>
-        </div>
-        <div style={{ padding: '8px 0' }}>
-          {draftsAndUpcoming.map(e => (
-            <div key={e.id} className="td-draft-row">
-              <div className="td-draft-icon">
-                {e.status === 'draft' ? (
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2">
-                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                  </svg>
-                ) : (
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563eb" strokeWidth="2">
-                    <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
-                  </svg>
-                )}
-              </div>
-              <div className="td-draft-info">
-                <span className="td-draft-title">{e.title}</span>
-                <span className="td-draft-course">{e.course}</span>
-              </div>
-              <div className="td-draft-right">
-                <span className={`td-draft-badge ${e.status === 'draft' ? 'td-badge-draft' : 'td-badge-upcoming'}`}>
-                  {e.status === 'draft' ? 'Draft' : 'Upcoming'}
-                </span>
-                {e.scheduledFor && (
-                  <span className="td-draft-date">{e.scheduledFor}</span>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-    </div>
-  </div>
-);
-
-/* ── Router ── */
 const TeacherDashboard: React.FC = () => (
   <DashboardLayout navItems={teacherNav} portalTitle="Teacher Portal" accentColor="#38a169">
     <Routes>
-      <Route path="/"              element={<TeacherDashboardHome />} />
-      <Route path="/exams"         element={<ExamsList />} />
+      <Route path="/" element={<TeacherDashboardHome />} />
+      <Route path="/courses" element={<TeacherCourses />} />
+      <Route path="/exams" element={<ExamsList />} />
       <Route path="/exams/builder" element={<ExamBuilder />} />
-      <Route path="/sessions"      element={<ExamSessionsMonitor />} />
-      <Route path="/results"       element={<ResultsDashboard />} />
-      <Route path="/profile"       element={<TeacherProfile />} />
-      <Route path="/students"      element={<CourseEnrollments />} />
+      <Route path="/exams/builder/:examId" element={<ExamBuilder />} />
+      <Route path="/sessions" element={<ExamSessionsMonitor />} />
+      <Route path="/results" element={<ResultsDashboard />} />
+      <Route path="/profile" element={<TeacherProfile />} />
+      <Route path="/students" element={<CourseEnrollments />} />
     </Routes>
   </DashboardLayout>
 );
