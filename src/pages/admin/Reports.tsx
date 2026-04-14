@@ -76,7 +76,6 @@ const Reports: React.FC = () => {
 
     return {
       exams: exams.length,
-      resultRows: resultRows.length,
       averageScore,
       correctRate,
     };
@@ -111,7 +110,6 @@ const Reports: React.FC = () => {
                 <tr>
                   <th>Course</th>
                   <th>Exams</th>
-                  <th>Result Rows</th>
                   <th>Average Score</th>
                   <th></th>
                 </tr>
@@ -128,7 +126,6 @@ const Reports: React.FC = () => {
                     <tr key={String(metric.course.id)}>
                       <td style={{ fontWeight: 600 }}>{metric.course.name}</td>
                       <td>{metric.exams.length}</td>
-                      <td>{metric.resultRows.length}</td>
                       <td>{averageScore}%</td>
                       <td>
                         <button className="btn btn-sm btn-secondary" onClick={() => setSelectedCourseId(String(metric.course.id))}>
@@ -143,31 +140,16 @@ const Reports: React.FC = () => {
           </div>
         </div>
 
-        <div className="content-card">
+        <div className="content-card" style={{ gridColumn: '1 / -1' }}>
           <div className="content-card-header">
             <h2>Key Indicators</h2>
           </div>
           <div className="content-card-body">
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
               <div className="metric-box"><div style={{ fontSize: '24px', fontWeight: 700 }}>{activeMetrics.exams}</div><div style={{ fontSize: '11px', opacity: 0.7 }}>Exams</div></div>
-              <div className="metric-box"><div style={{ fontSize: '24px', fontWeight: 700 }}>{activeMetrics.resultRows}</div><div style={{ fontSize: '11px', opacity: 0.7 }}>Result Rows</div></div>
               <div className="metric-box"><div style={{ fontSize: '24px', fontWeight: 700 }}>{activeMetrics.averageScore}%</div><div style={{ fontSize: '11px', opacity: 0.7 }}>Average Score</div></div>
               <div className="metric-box"><div style={{ fontSize: '24px', fontWeight: 700 }}>{activeMetrics.correctRate}%</div><div style={{ fontSize: '11px', opacity: 0.7 }}>Correct Rate</div></div>
             </div>
-          </div>
-        </div>
-
-        <div className="content-card">
-          <div className="content-card-header">
-            <h2>Active Scope</h2>
-          </div>
-          <div className="content-card-body">
-            <div style={{ fontSize: '14px' }}>
-              Viewing: <strong>{selectedCourseId === 'ALL' ? 'All Courses' : metrics.find((metric) => String(metric.course.id) === selectedCourseId)?.course.name || 'Selected Course'}</strong>
-            </div>
-            <p style={{ marginTop: '12px', fontSize: '12px', color: '#666' }}>
-              These metrics are computed from the latest teacher dashboard rows returned by the backend, not from mock analytics.
-            </p>
           </div>
         </div>
       </div>
